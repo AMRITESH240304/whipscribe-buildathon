@@ -121,10 +121,8 @@
 </script>
 
 <section aria-labelledby="calendar-heading">
-  <div class="mb-2 flex items-center justify-between">
-    <h2 id="calendar-heading" class="text-xs font-medium tracking-wide text-zinc-500 uppercase">
-      Upcoming meetings
-    </h2>
+  <div class="mb-6 flex items-center justify-between">
+    <h2 id="calendar-heading" class="text-xl font-semibold">Upcoming meetings</h2>
     {#if connected && view !== "connecting"}
       <div class="flex gap-2">
         <button class="btn" onclick={() => load()} disabled={view === "loading"}>Refresh</button>

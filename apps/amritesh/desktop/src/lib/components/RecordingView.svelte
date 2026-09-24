@@ -91,7 +91,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="mx-auto w-full max-w-2xl px-6 py-6">
+<div class="mx-auto w-full max-w-3xl px-8 py-8">
   <div class="mb-6 flex items-start gap-4">
     <button class="btn" onclick={onBack} aria-label="Back to recordings">← Back</button>
     <div class="min-w-0 flex-1">

@@ -48,7 +48,7 @@ class Recorder {
     this.loaded = true;
   }
 
-  async start(title: string) {
+  async start(title = defaultTitle()) {
     this.error = "";
     try {
       await invoke("start_recording", { title });
@@ -85,6 +85,9 @@ class Recorder {
 }
 
 export const recorder = new Recorder();
+
+const defaultTitle = () =>
+  `Recording, ${new Date().toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}`;
 
 export function formatDuration(totalSecs: number) {
   const secs = Math.floor(totalSecs);

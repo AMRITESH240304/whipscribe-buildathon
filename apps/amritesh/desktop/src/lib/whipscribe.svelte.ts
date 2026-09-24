@@ -44,6 +44,11 @@ class WhipScribe {
     this.#pending = null;
   }
 
+  async stopAndTranscribe() {
+    const id = await recorder.stop();
+    if (id) this.transcribe(id);
+  }
+
   cancelConnect() {
     this.askForKey = false;
     this.#pending = null;

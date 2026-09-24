@@ -3,11 +3,6 @@
   import { whipscribe } from "$lib/whipscribe.svelte";
 
   const status = $derived(recorder.status);
-
-  async function stop() {
-    const id = await recorder.stop();
-    if (id) whipscribe.transcribe(id);
-  }
 </script>
 
 {#snippet meter(label: string, level: number, off: boolean)}
@@ -46,7 +41,7 @@
     <button class="btn" onclick={() => recorder.setPaused(!status.paused)}>
       {status.paused ? "Resume" : "Pause"}
     </button>
-    <button class="btn-primary" onclick={stop}>Stop</button>
+    <button class="btn-primary" onclick={() => whipscribe.stopAndTranscribe()}>Stop</button>
   </div>
   {#if status.systemError}
     <p class="border-b border-amber-200 bg-amber-50 px-6 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200" role="alert">

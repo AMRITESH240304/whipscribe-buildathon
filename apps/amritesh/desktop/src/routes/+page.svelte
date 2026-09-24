@@ -4,10 +4,14 @@
   import RecordBar from "$lib/components/RecordBar.svelte";
   import RecordingView from "$lib/components/RecordingView.svelte";
   import Recordings from "$lib/components/Recordings.svelte";
+  import SearchResults from "$lib/components/SearchResults.svelte";
+  import Sidebar, { type View } from "$lib/components/Sidebar.svelte";
   import { library } from "$lib/library.svelte";
   import { recorder } from "$lib/recorder.svelte";
   import { whipscribe } from "$lib/whipscribe.svelte";
 
+  let view = $state<View>({ kind: "meetings" });
+  let query = $state("");
   let openId = $state<string | null>(null);
   let openAt = $state<number | undefined>();
 
@@ -17,31 +21,40 @@
     await Promise.all([recorder.init(), whipscribe.init(), library.init()]);
     if (whipscribe.connected) whipscribe.resume(recorder.recordings);
   });
+
+  function navigate(next: View) {
+    view = next;
+    query = "";
+    openId = null;
+  }
+
+  function openRecording(id: string, at?: number) {
+    openId = id;
+    openAt = at;
+  }
 </script>
 
-<div class="flex h-screen flex-col">
-  <header class="flex items-center justify-between border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
-    <h1 class="text-sm font-semibold">WhipScribe Recorder</h1>
-    {#if !recorder.status}
-      <button class="btn-primary" onclick={() => recorder.start("Untitled recording")}>
-        <span class="size-2 rounded-full bg-red-500" aria-hidden="true"></span>
-        Record
-      </button>
-    {/if}
-  </header>
+<div class="flex h-screen">
+  <Sidebar {view} bind:query onNavigate={navigate} />
 
-  <RecordBar />
-
-  <main class="flex-1 overflow-y-auto">
-    {#if open}
-      {#key open.id}
-        <RecordingView recording={open} at={openAt} onBack={() => (openId = null)} />
-      {/key}
-    {:else}
-      <div class="mx-auto w-full max-w-2xl space-y-10 px-6 py-6">
-        <Calendar />
-        <Recordings onOpen={(id, at) => ((openId = id), (openAt = at))} />
-      </div>
-    {/if}
-  </main>
+  <div class="flex min-w-0 flex-1 flex-col">
+    <RecordBar />
+    <main class="flex-1 overflow-y-auto">
+      {#if open}
+        {#key open.id}
+          <RecordingView recording={open} at={openAt} onBack={() => (openId = null)} />
+        {/key}
+      {:else}
+        <div class="mx-auto w-full max-w-3xl px-8 py-8">
+          {#if query.trim()}
+            <SearchResults {query} onOpen={openRecording} />
+          {:else if view.kind === "meetings"}
+            <Calendar />
+          {:else}
+            <Recordings folderId={view.kind === "folder" ? view.id : null} onOpen={openRecording} />
+          {/if}
+        </div>
+      {/if}
+    </main>
+  </div>
 </div>
