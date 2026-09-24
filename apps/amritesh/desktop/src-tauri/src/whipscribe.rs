@@ -40,6 +40,62 @@ impl WhipScribe {
             .header("X-API-Key", api_key()?)
             .timeout(TIMEOUT))
     }
+
+    // The Idempotency-Key makes a repeated upload of the same audio reuse its job.
+    pub(crate) async fn upload(
+        &self,
+        file: multipart::Part,
+        idempotency_key: &str,
+    ) -> Result<String> {
+        let form = multipart::Form::new()
+            .part("file", file)
+            .text("source", "recording");
+        let job: Submitted = send(
+            self.http
+                .post(format!("{API}/transcribe"))
+                .header("X-API-Key", api_key()?)
+                .header("Idempotency-Key", idempotency_key)
+                .multipart(form),
+        )
+        .await?;
+        Ok(job.job_id)
+    }
+
+    pub(crate) async fn finished_segments(
+        &self,
+        job_id: &str,
+        every: Duration,
+    ) -> Result<Vec<Segment>> {
+        loop {
+            let status: JobStatus = send(self.get(&format!("/jobs/{job_id}"))?).await?;
+            match status.status.as_str() {
+                "done" => break,
+                "failed" => {
+                    return Err(status
+                        .error
+                        .unwrap_or_else(|| "Transcription failed.".into()))
+                }
+                _ => tokio::time::sleep(every).await,
+            }
+        }
+        let stored: Stored = send(self.get(&format!("/jobs/{job_id}/result?format=json"))?).await?;
+        Ok(stored.segments)
+    }
+
+    pub(crate) async fn delete_job(&self, job_id: &str) -> Result<()> {
+        let res = self
+            .http
+            .delete(format!("{API}/jobs/{job_id}"))
+            .header("X-API-Key", api_key()?)
+            .timeout(TIMEOUT)
+            .send()
+            .await
+            .map_err(net_err)?;
+        if res.status() != StatusCode::NOT_FOUND {
+            check(res).await?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -115,7 +171,6 @@ pub async fn whipscribe_connect(state: State<'_, WhipScribe>, key: String) -> Re
 }
 
 // Returns the job for this recording, uploading it first if needed.
-// The Idempotency-Key makes a repeated upload of the same attempt reuse the job.
 #[tauri::command]
 pub async fn transcribe(
     app: AppHandle,
@@ -140,25 +195,12 @@ pub async fn transcribe(
         .file_name(file_name)
         .mime_str("audio/wav")
         .map_err(err)?;
-    let form = multipart::Form::new()
-        .part("file", part)
-        .text("source", "recording");
-
-    let job: Submitted = send(
-        state
-            .http
-            .post(format!("{API}/transcribe"))
-            .header("X-API-Key", api_key()?)
-            .header(
-                "Idempotency-Key",
-                format!("recording-{id}-{}", meta.attempt),
-            )
-            .multipart(form),
-    )
-    .await?;
-    meta.job_id = Some(job.job_id.clone());
+    let job_id = state
+        .upload(part, &format!("recording-{id}-{}", meta.attempt))
+        .await?;
+    meta.job_id = Some(job_id.clone());
     write_meta(&dir, &id, &meta)?;
-    Ok(job.job_id)
+    Ok(job_id)
 }
 
 #[tauri::command]
@@ -199,17 +241,7 @@ pub async fn delete_recording(
 ) -> Result<()> {
     let dir = recordings_dir(&app)?;
     if let Some(job_id) = read_meta(&dir, &id).and_then(|m| m.job_id) {
-        let res = state
-            .http
-            .delete(format!("{API}/jobs/{job_id}"))
-            .header("X-API-Key", api_key()?)
-            .timeout(TIMEOUT)
-            .send()
-            .await
-            .map_err(net_err)?;
-        if res.status() != StatusCode::NOT_FOUND {
-            check(res).await?;
-        }
+        state.delete_job(&job_id).await?;
     }
     for path in [
         dir.join(format!("{id}.wav")),
@@ -227,13 +259,13 @@ pub async fn delete_recording(
 #[derive(Deserialize)]
 struct Stored {
     #[serde(default)]
-    segments: Vec<StoredSegment>,
+    segments: Vec<Segment>,
 }
 
-#[derive(Deserialize)]
-struct StoredSegment {
-    start: f64,
-    text: String,
+#[derive(Deserialize, Serialize, Clone)]
+pub(crate) struct Segment {
+    pub start: f64,
+    pub text: String,
 }
 
 #[derive(Serialize)]

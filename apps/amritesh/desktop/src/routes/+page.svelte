@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Calendar from "$lib/components/Calendar.svelte";
+  import LiveTranscript from "$lib/components/LiveTranscript.svelte";
   import RecordBar from "$lib/components/RecordBar.svelte";
   import RecordingView from "$lib/components/RecordingView.svelte";
   import Recordings from "$lib/components/Recordings.svelte";
@@ -39,6 +40,7 @@
 
   <div class="flex min-w-0 flex-1 flex-col">
     <RecordBar />
+    <LiveTranscript />
     <main class="flex-1 overflow-y-auto">
       {#if open}
         {#key open.id}

@@ -1,6 +1,7 @@
 use tauri::{Manager, RunEvent};
 
 mod google;
+mod live;
 mod mcp;
 mod mixer;
 mod oauth;

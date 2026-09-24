@@ -19,6 +19,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::{
     err,
+    live::Chunker,
     mixer::{Mixer, Source, OUTPUT_RATE},
     Result,
 };
@@ -26,7 +27,7 @@ use crate::{
 type Wav = hound::WavWriter<BufWriter<File>>;
 type Chunks = mpsc::Sender<(Source, Vec<f32>)>;
 
-const WAV_SPEC: hound::WavSpec = hound::WavSpec {
+pub(crate) const WAV_SPEC: hound::WavSpec = hound::WavSpec {
     channels: 1,
     sample_rate: OUTPUT_RATE,
     bits_per_sample: 16,
@@ -78,6 +79,7 @@ pub(crate) struct Meta {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    id: String,
     title: String,
     elapsed_secs: f64,
     paused: bool,
@@ -216,6 +218,7 @@ fn record(
     path: PathBuf,
     shared: Arc<Shared>,
     ready: mpsc::Sender<Result<Option<String>>>,
+    mut live: Option<Chunker>,
 ) -> Result<()> {
     let host = cpal::default_host();
     let (tx, rx) = mpsc::channel();
@@ -250,7 +253,11 @@ fn record(
         for (source, chunk) in received.chain(rx.try_iter()) {
             mixer.push(source, &chunk);
         }
-        write_samples(&mut writer, &shared, &mixer.drain(false))?;
+        let samples = mixer.drain(false);
+        write_samples(&mut writer, &shared, &samples)?;
+        if let Some(live) = &mut live {
+            live.push(&samples);
+        }
         if last_flush.elapsed() >= Duration::from_secs(1) {
             writer.flush().map_err(err)?;
             last_flush = Instant::now();
@@ -341,7 +348,8 @@ pub fn start_recording(app: AppHandle, state: State<'_, Recorder>, title: String
 
     let path = dir.join(format!("{id}.{PARTIAL}"));
     let thread_shared = shared.clone();
-    let thread = std::thread::spawn(move || record(path, thread_shared, ready_tx));
+    let live = Chunker::start(&app, &id);
+    let thread = std::thread::spawn(move || record(path, thread_shared, ready_tx, live));
     let system_error = ready_rx
         .recv()
         .map_err(|_| "The recorder stopped unexpectedly.".to_string())??;
@@ -383,6 +391,7 @@ pub fn set_paused(state: State<'_, Recorder>, paused: bool) -> Result<()> {
 pub fn recording_status(state: State<'_, Recorder>) -> Option<Status> {
     let slot = state.session.lock().unwrap();
     slot.as_ref().map(|s| Status {
+        id: s.id.clone(),
         title: s.title.clone(),
         elapsed_secs: s.shared.frames.load(Relaxed) as f64 / OUTPUT_RATE as f64,
         paused: s.shared.paused.load(Relaxed),

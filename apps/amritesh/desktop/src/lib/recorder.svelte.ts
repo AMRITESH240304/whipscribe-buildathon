@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export type Status = {
+  id: string;
   title: string;
   elapsedSecs: number;
   paused: boolean;
@@ -20,6 +22,9 @@ export type Recording = {
   path: string;
 };
 
+export type LiveSegment = { start: number; text: string };
+type LiveText = { recordingId: string; index: number; segments: LiveSegment[] };
+
 const SILENCE_HINT_SECS = 5;
 
 class Recorder {
@@ -28,6 +33,8 @@ class Recorder {
   loaded = $state(false);
   error = $state("");
   heardSound = $state(false);
+  // Rough preview while recording, in order even when clips finish out of order.
+  live = $state<LiveText[]>([]);
 
   #poll?: ReturnType<typeof setInterval>;
 
@@ -38,6 +45,10 @@ class Recorder {
   }
 
   async init() {
+    listen<LiveText>("live-text", ({ payload }) => {
+      if (payload.recordingId !== this.status?.id) return;
+      this.live = [...this.live, payload].sort((a, b) => a.index - b.index);
+    });
     await this.refresh();
     this.status = await invoke<Status | null>("recording_status");
     if (this.status) this.#startPolling();
@@ -53,6 +64,7 @@ class Recorder {
     try {
       await invoke("start_recording", { title });
       this.heardSound = false;
+      this.live = [];
       this.#startPolling();
     } catch (e) {
       this.error = String(e);
@@ -71,6 +83,7 @@ class Recorder {
       return null;
     });
     this.status = null;
+    this.live = [];
     await this.refresh();
     return id;
   }
