@@ -1,156 +1,222 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { connect, disconnect, isConnected, upcomingEvents, type CalendarEvent } from "$lib/google";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  type View = "checking" | "signedOut" | "connecting" | "loading" | "ready" | "error";
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  const REFRESH_MS = 5 * 60_000;
+
+  let view = $state<View>("checking");
+  let connected = $state(false);
+  let events = $state<CalendarEvent[]>([]);
+  let errorMessage = $state("");
+  let now = $state(Date.now());
+
+  const days = $derived(groupByDay(events, now));
+
+  onMount(() => {
+    start();
+    const clock = setInterval(() => (now = Date.now()), 30_000);
+    const poll = setInterval(() => view === "ready" && load(true), REFRESH_MS);
+    return () => {
+      clearInterval(clock);
+      clearInterval(poll);
+    };
+  });
+
+  async function start() {
+    connected = await isConnected();
+    if (connected) await load();
+    else view = "signedOut";
+  }
+
+  async function load(silent = false) {
+    if (!silent) view = "loading";
+    try {
+      events = await upcomingEvents();
+      view = "ready";
+    } catch (e) {
+      if (!silent || String(e) === "not_connected") fail(e);
+    }
+  }
+
+  async function onConnect() {
+    view = "connecting";
+    try {
+      await connect();
+      connected = true;
+      await load();
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  async function onDisconnect() {
+    await disconnect().catch(() => {});
+    connected = false;
+    events = [];
+    view = "signedOut";
+  }
+
+  function fail(e: unknown) {
+    const message = String(e);
+    if (message === "not_connected") {
+      connected = false;
+      view = "signedOut";
+      return;
+    }
+    errorMessage =
+      message === "offline" ? "You're offline. Check your connection and try again." : message;
+    view = "error";
+  }
+
+  function groupByDay(list: CalendarEvent[], nowMs: number) {
+    const today = new Date(nowMs);
+    today.setHours(0, 0, 0, 0);
+    const groups = new Map<string, CalendarEvent[]>();
+    for (const event of list) {
+      const day = event.start < today ? today : event.start;
+      const key = day.toDateString();
+      groups.set(key, [...(groups.get(key) ?? []), event]);
+    }
+    return [...groups].map(([key, items]) => ({ key, label: dayLabel(new Date(key), today), items }));
+  }
+
+  function dayLabel(day: Date, today: Date) {
+    const diff = Math.round((day.getTime() - today.getTime()) / 86_400_000);
+    if (diff === 0) return "Today";
+    if (diff === 1) return "Tomorrow";
+    return day.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" });
+  }
+
+  const clockTime = (d: Date) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+  function timeRange(event: CalendarEvent) {
+    return event.allDay ? "All day" : `${clockTime(event.start)} – ${clockTime(event.end)}`;
+  }
+
+  function badge(event: CalendarEvent, nowMs: number) {
+    if (event.allDay) return null;
+    const start = event.start.getTime();
+    if (start <= nowMs && nowMs < event.end.getTime()) return "Now";
+    const minutes = Math.ceil((start - nowMs) / 60_000);
+    return minutes > 0 && minutes <= 60 ? `In ${minutes} min` : null;
+  }
+
+  function details(event: CalendarEvent) {
+    const host = event.meetingUrl ? new URL(event.meetingUrl).hostname : "";
+    const provider = host.includes("meet.google")
+      ? "Google Meet"
+      : host.includes("zoom.us")
+        ? "Zoom"
+        : host.includes("teams.")
+          ? "Microsoft Teams"
+          : host && "Video call";
+    const people =
+      event.attendees > 0 && `${event.attendees} ${event.attendees === 1 ? "person" : "people"}`;
+    return [provider, people].filter(Boolean).join(" · ");
   }
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<div class="flex h-screen flex-col">
+  <header
+    class="flex items-center justify-between border-b border-zinc-200 px-6 py-3 dark:border-zinc-800"
+  >
+    <h1 class="text-sm font-semibold">WhipScribe Recorder</h1>
+    {#if connected && view !== "connecting"}
+      <div class="flex gap-2">
+        <button class="btn" onclick={() => load()} disabled={view === "loading"}>Refresh</button>
+        <button class="btn" onclick={onDisconnect}>Disconnect calendar</button>
+      </div>
+    {/if}
+  </header>
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
-  </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
-
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
-
-<style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
-
-</style>
+  <main class="flex flex-1 flex-col overflow-y-auto">
+    {#if view === "signedOut"}
+      <section class="m-auto max-w-sm px-6 text-center">
+        <h2 class="text-xl font-semibold">Connect your calendar</h2>
+        <p class="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+          See your upcoming meetings here so you're ready to record them. We only read your
+          events and never change them.
+        </p>
+        <button class="btn-primary mt-6" onclick={onConnect}>Connect Google Calendar</button>
+      </section>
+    {:else if view === "connecting"}
+      <section class="m-auto max-w-sm px-6 text-center" aria-live="polite">
+        <div
+          class="mx-auto size-6 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-900 dark:border-zinc-700 dark:border-t-white"
+          aria-hidden="true"
+        ></div>
+        <h2 class="mt-4 font-semibold">Finish signing in with Google</h2>
+        <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+          We opened your browser. This window updates as soon as you're done.
+        </p>
+      </section>
+    {:else if view === "loading"}
+      <div class="mx-auto w-full max-w-2xl space-y-3 px-6 py-6" aria-busy="true" aria-label="Loading your meetings">
+        {#each { length: 4 } as _}
+          <div class="h-14 animate-pulse rounded-lg bg-zinc-100 dark:bg-zinc-900"></div>
+        {/each}
+      </div>
+    {:else if view === "error"}
+      <section class="m-auto max-w-sm px-6 text-center" role="alert">
+        <h2 class="font-semibold">Couldn't load your calendar</h2>
+        <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{errorMessage}</p>
+        <button class="btn mt-4" onclick={start}>Try again</button>
+      </section>
+    {:else if view === "ready" && events.length === 0}
+      <section class="m-auto max-w-sm px-6 text-center">
+        <h2 class="font-semibold">No meetings in the next 7 days</h2>
+        <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+          New events show up here automatically.
+        </p>
+      </section>
+    {:else if view === "ready"}
+      <div class="mx-auto w-full max-w-2xl px-6 py-6">
+        {#each days as day (day.key)}
+          <section class="mb-8">
+            <h2 class="mb-2 text-xs font-medium tracking-wide text-zinc-500 uppercase">{day.label}</h2>
+            <ul
+              class="divide-y divide-zinc-200 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800"
+            >
+              {#each day.items as event (event.id)}
+                {@const status = badge(event, now)}
+                <li class="flex items-center gap-4 px-4 py-3">
+                  <span class="w-32 shrink-0 text-sm text-zinc-500 tabular-nums">{timeRange(event)}</span>
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate font-medium">{event.title}</p>
+                    {#if details(event)}
+                      <p class="truncate text-xs text-zinc-500">{details(event)}</p>
+                    {/if}
+                  </div>
+                  {#if status}
+                    <span
+                      class={[
+                        "rounded-full px-2 py-0.5 text-xs font-medium",
+                        status === "Now"
+                          ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
+                          : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+                      ]}
+                    >
+                      {status}
+                    </span>
+                  {/if}
+                  {#if event.meetingUrl}
+                    <button
+                      class="btn"
+                      onclick={() => openUrl(event.meetingUrl!)}
+                      aria-label={`Join ${event.title}`}
+                    >
+                      Join
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/each}
+      </div>
+    {/if}
+  </main>
+</div>
