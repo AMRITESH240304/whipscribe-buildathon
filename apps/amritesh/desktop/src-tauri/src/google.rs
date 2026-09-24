@@ -13,6 +13,8 @@ use tokio::{
 };
 use url::Url;
 
+use crate::{err, net_err, secret, Result, NOT_CONNECTED};
+
 const CLIENT_ID: &str = env!("GOOGLE_CLIENT_ID");
 const CLIENT_SECRET: &str = env!("GOOGLE_CLIENT_SECRET");
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -20,15 +22,8 @@ const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 const EVENTS_URL: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const SCOPE: &str = "https://www.googleapis.com/auth/calendar.events.readonly";
-const KEYRING_SERVICE: &str = "com.amritesh.whipscribe-recorder";
 const KEYRING_USER: &str = "google-refresh-token";
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
-
-// Sentinels the UI maps to its signed-out and offline states.
-const NOT_CONNECTED: &str = "not_connected";
-const OFFLINE: &str = "offline";
-
-type Result<T> = std::result::Result<T, String>;
 
 pub struct GoogleState {
     http: reqwest::Client,
@@ -146,20 +141,8 @@ impl GoogleEvent {
     }
 }
 
-fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
-}
-
-fn net_err(e: reqwest::Error) -> String {
-    if e.is_connect() || e.is_timeout() {
-        OFFLINE.into()
-    } else {
-        e.to_string()
-    }
-}
-
 fn keyring() -> Result<keyring::Entry> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(err)
+    secret(KEYRING_USER)
 }
 
 fn stored_refresh_token() -> Option<String> {
@@ -199,7 +182,10 @@ async fn access_token(state: &GoogleState) -> Result<String> {
         .map_err(net_err)?;
 
     // Revoked or expired grant: forget it so the UI asks to reconnect.
-    if matches!(res.status(), StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED) {
+    if matches!(
+        res.status(),
+        StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED
+    ) {
         let _ = keyring()?.delete_credential();
         return Err(NOT_CONNECTED.into());
     }
@@ -262,7 +248,10 @@ pub fn google_status() -> bool {
 #[tauri::command]
 pub async fn google_connect(app: AppHandle, state: State<'_, GoogleState>) -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await.map_err(err)?;
-    let redirect_uri = format!("http://127.0.0.1:{}", listener.local_addr().map_err(err)?.port());
+    let redirect_uri = format!(
+        "http://127.0.0.1:{}",
+        listener.local_addr().map_err(err)?.port()
+    );
     let verifier = random_token();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let csrf = random_token();

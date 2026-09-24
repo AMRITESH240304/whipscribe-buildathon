@@ -17,9 +17,12 @@ use cpal::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
-use crate::mixer::{Mixer, Source, OUTPUT_RATE};
+use crate::{
+    err,
+    mixer::{Mixer, Source, OUTPUT_RATE},
+    Result,
+};
 
-type Result<T> = std::result::Result<T, String>;
 type Wav = hound::WavWriter<BufWriter<File>>;
 type Chunks = mpsc::Sender<(Source, Vec<f32>)>;
 
@@ -62,13 +65,14 @@ impl Shared {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Meta {
-    title: String,
-    started_at: u64,
-    #[serde(default)]
-    recovered: bool,
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct Meta {
+    pub title: String,
+    pub started_at: u64,
+    pub recovered: bool,
+    pub job_id: Option<String>,
+    pub attempt: u32,
 }
 
 #[derive(Serialize)]
@@ -90,25 +94,23 @@ pub struct Recording {
     started_at: u64,
     duration_secs: f64,
     recovered: bool,
+    job_id: Option<String>,
+    transcribed: bool,
     path: PathBuf,
 }
 
-fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
-}
-
-fn recordings_dir(app: &AppHandle) -> Result<PathBuf> {
+pub(crate) fn recordings_dir(app: &AppHandle) -> Result<PathBuf> {
     let dir = app.path().app_data_dir().map_err(err)?.join("recordings");
     fs::create_dir_all(&dir).map_err(err)?;
     Ok(dir)
 }
 
-fn write_meta(dir: &Path, id: &str, meta: &Meta) -> Result<()> {
+pub(crate) fn write_meta(dir: &Path, id: &str, meta: &Meta) -> Result<()> {
     let json = serde_json::to_vec_pretty(meta).map_err(err)?;
     fs::write(dir.join(format!("{id}.json")), json).map_err(err)
 }
 
-fn read_meta(dir: &Path, id: &str) -> Option<Meta> {
+pub(crate) fn read_meta(dir: &Path, id: &str) -> Option<Meta> {
     serde_json::from_slice(&fs::read(dir.join(format!("{id}.json"))).ok()?).ok()
 }
 
@@ -304,7 +306,7 @@ pub fn recover_interrupted(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-pub fn finish(recorder: &Recorder) -> Result<()> {
+pub fn finish(recorder: &Recorder) -> Result<String> {
     let session = recorder
         .session
         .lock()
@@ -318,7 +320,7 @@ pub fn finish(recorder: &Recorder) -> Result<()> {
         .map_err(|_| "The recorder stopped unexpectedly.".to_string())?;
     let partial = session.dir.join(format!("{}.{PARTIAL}", session.id));
     fs::rename(&partial, session.dir.join(format!("{}.wav", session.id))).map_err(err)?;
-    result
+    result.map(|()| session.id)
 }
 
 #[tauri::command]
@@ -350,7 +352,7 @@ pub fn start_recording(app: AppHandle, state: State<'_, Recorder>, title: String
         &Meta {
             title: title.clone(),
             started_at,
-            recovered: false,
+            ..Default::default()
         },
     )?;
     *slot = Some(Session {
@@ -365,7 +367,7 @@ pub fn start_recording(app: AppHandle, state: State<'_, Recorder>, title: String
 }
 
 #[tauri::command]
-pub fn stop_recording(state: State<'_, Recorder>) -> Result<()> {
+pub fn stop_recording(state: State<'_, Recorder>) -> Result<String> {
     finish(&state)
 }
 
@@ -400,16 +402,19 @@ pub fn list_recordings(app: AppHandle) -> Result<Vec<Recording>> {
         .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("wav"))
         .filter_map(|path| {
             let id = path.file_stem()?.to_str()?.to_string();
-            let meta = read_meta(&dir, &id);
+            let meta = read_meta(&dir, &id).unwrap_or_else(|| Meta {
+                title: "Untitled recording".into(),
+                ..Default::default()
+            });
             let duration_secs = hound::WavReader::open(&path)
                 .map(|r| r.duration() as f64 / r.spec().sample_rate as f64)
                 .unwrap_or(0.0);
             Some(Recording {
-                title: meta
-                    .as_ref()
-                    .map_or("Untitled recording".into(), |m| m.title.clone()),
-                started_at: meta.as_ref().map_or(0, |m| m.started_at),
-                recovered: meta.is_some_and(|m| m.recovered),
+                transcribed: crate::whipscribe::transcript_path(&dir, &id).exists(),
+                title: meta.title,
+                started_at: meta.started_at,
+                recovered: meta.recovered,
+                job_id: meta.job_id,
                 duration_secs,
                 path,
                 id,

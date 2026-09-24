@@ -22,13 +22,13 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1.53.1", features = ["net", "io-util", "time", "sync"] }
+tokio = { version = "1.53.1", features = ["net", "io-util", "time", "sync", "fs"] }
 rand = "0.10.3"
 sha2 = "0.11.0"
 base64 = "0.23.1"
 url = "2.5.8"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "form", "query"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "form", "query", "multipart", "stream"] }
 cpal = "0.18.2"
 hound = "3.5.1"
 

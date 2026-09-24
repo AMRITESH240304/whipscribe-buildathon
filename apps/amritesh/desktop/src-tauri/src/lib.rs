@@ -3,6 +3,29 @@ use tauri::{Manager, RunEvent};
 mod google;
 mod mixer;
 mod recorder;
+mod whipscribe;
+
+type Result<T> = std::result::Result<T, String>;
+
+// Sentinels the UI maps to its signed-out and offline states.
+const NOT_CONNECTED: &str = "not_connected";
+const OFFLINE: &str = "offline";
+
+fn err(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
+
+fn net_err(e: reqwest::Error) -> String {
+    if e.is_connect() || e.is_timeout() {
+        OFFLINE.into()
+    } else {
+        e.to_string()
+    }
+}
+
+fn secret(name: &str) -> Result<keyring::Entry> {
+    keyring::Entry::new("com.amritesh.whipscribe-recorder", name).map_err(err)
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10,6 +33,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(google::GoogleState::new())
         .manage(recorder::Recorder::default())
+        .manage(whipscribe::WhipScribe::new())
         .setup(|app| {
             if let Err(e) = recorder::recover_interrupted(app.handle()) {
                 eprintln!("recovery failed: {e}");
@@ -26,6 +50,11 @@ pub fn run() {
             recorder::set_paused,
             recorder::recording_status,
             recorder::list_recordings,
+            whipscribe::whipscribe_status,
+            whipscribe::whipscribe_connect,
+            whipscribe::transcribe,
+            whipscribe::job_status,
+            whipscribe::transcript,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

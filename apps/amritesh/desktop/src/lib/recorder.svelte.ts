@@ -15,6 +15,8 @@ export type Recording = {
   startedAt: number;
   durationSecs: number;
   recovered: boolean;
+  jobId: string | null;
+  transcribed: boolean;
   path: string;
 };
 
@@ -64,13 +66,13 @@ class Recorder {
 
   async stop() {
     clearInterval(this.#poll);
-    try {
-      await invoke("stop_recording");
-    } catch (e) {
+    const id = await invoke<string>("stop_recording").catch((e) => {
       this.error = String(e);
-    }
+      return null;
+    });
     this.status = null;
     await this.refresh();
+    return id;
   }
 
   #startPolling() {

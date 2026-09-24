@@ -3,10 +3,15 @@
   import Calendar from "$lib/components/Calendar.svelte";
   import RecordBar from "$lib/components/RecordBar.svelte";
   import Recordings from "$lib/components/Recordings.svelte";
-  import { recorder } from "$lib/recorder.svelte";
+  import Transcript from "$lib/components/Transcript.svelte";
+  import { recorder, type Recording } from "$lib/recorder.svelte";
+  import { whipscribe } from "$lib/whipscribe.svelte";
 
-  onMount(() => {
-    recorder.init();
+  let open = $state<Recording | null>(null);
+
+  onMount(async () => {
+    await Promise.all([recorder.init(), whipscribe.init()]);
+    if (whipscribe.connected) whipscribe.resume(recorder.recordings);
   });
 </script>
 
@@ -24,9 +29,13 @@
   <RecordBar />
 
   <main class="flex-1 overflow-y-auto">
-    <div class="mx-auto w-full max-w-2xl space-y-10 px-6 py-6">
-      <Calendar />
-      <Recordings />
-    </div>
+    {#if open}
+      <Transcript recording={open} onBack={() => (open = null)} />
+    {:else}
+      <div class="mx-auto w-full max-w-2xl space-y-10 px-6 py-6">
+        <Calendar />
+        <Recordings onOpen={(recording) => (open = recording)} />
+      </div>
+    {/if}
   </main>
 </div>
