@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type View = { kind: "meetings" } | { kind: "all" } | { kind: "folder"; id: string };
+  export type View = { kind: "home" } | { kind: "all" } | { kind: "folder"; id: string };
 </script>
 
 <script lang="ts">
@@ -103,7 +103,7 @@
   </div>
 
   <div class="space-y-0.5">
-    {@render navItem("Upcoming meetings", { kind: "meetings" })}
+    {@render navItem("Home", { kind: "home" })}
     {@render navItem("All recordings", { kind: "all" }, recorder.recordings.length)}
   </div>
 

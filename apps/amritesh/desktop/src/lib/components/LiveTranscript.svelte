@@ -14,7 +14,7 @@
 {#if recorder.status}
   <section
     bind:this={panel}
-    class="max-h-48 overflow-y-auto border-b border-zinc-200 px-6 py-3 dark:border-zinc-800"
+    class="max-h-48 overflow-y-auto border-t border-zinc-200 bg-zinc-50 px-6 py-3 dark:border-zinc-800 dark:bg-zinc-900/60"
     aria-label="Live transcript"
     aria-live="polite"
   >

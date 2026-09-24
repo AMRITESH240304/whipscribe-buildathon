@@ -5,13 +5,19 @@
   import { formatDuration, recorder, type Recording } from "$lib/recorder.svelte";
   import { whipscribe } from "$lib/whipscribe.svelte";
 
-  let { folderId, onOpen }: { folderId: string | null; onOpen: (id: string) => void } = $props();
+  let {
+    folderId,
+    limit,
+    onOpen,
+    onViewAll,
+  }: { folderId: string | null; limit?: number; onOpen: (id: string) => void; onViewAll?: () => void } = $props();
 
   const folderNames = $derived(new Map(library.folders.map((f) => [f.folder_id, f.name])));
-  const title = $derived(folderId ? (folderNames.get(folderId) ?? "Folder") : "All recordings");
-  const shown = $derived(
+  const title = $derived(limit ? "Recent recordings" : folderId ? (folderNames.get(folderId) ?? "Folder") : "All recordings");
+  const all = $derived(
     folderId ? recorder.recordings.filter((r) => library.folderOf(r) === folderId) : recorder.recordings,
   );
+  const shown = $derived(limit ? all.slice(0, limit) : all);
 
   const startedAt = (ms: number) =>
     new Date(ms).toLocaleString(undefined, {
@@ -29,10 +35,15 @@
 </script>
 
 <section aria-labelledby="recordings-heading">
-  <h2 id="recordings-heading" class="mb-6 text-xl font-semibold">
-    {title}
-    {#if shown.length}<span class="ml-1 text-base font-normal text-zinc-500">{shown.length}</span>{/if}
-  </h2>
+  <div class="mb-6 flex items-center justify-between">
+    <h2 id="recordings-heading" class="text-xl font-semibold">
+      {title}
+      {#if !limit && all.length}<span class="ml-1 text-base font-normal text-zinc-500">{all.length}</span>{/if}
+    </h2>
+    {#if onViewAll && all.length > shown.length}
+      <button class="btn" onclick={onViewAll}>View all {all.length}</button>
+    {/if}
+  </div>
 
   {#if whipscribe.askForKey}
     <ApiKeyForm />

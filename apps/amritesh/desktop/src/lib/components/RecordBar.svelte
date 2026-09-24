@@ -20,8 +20,19 @@
 {/snippet}
 
 {#if status}
+  {#if status.systemError}
+    <p class="border-t border-amber-200 bg-amber-50 px-6 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200" role="alert">
+      Recording your microphone only. {status.systemError}
+    </p>
+  {/if}
+  {#if recorder.silent}
+    <p class="border-t border-amber-200 bg-amber-50 px-6 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200" role="alert">
+      We can't hear your microphone. Check it isn't muted, and that WhipScribe Recorder is
+      allowed in System Settings → Privacy & Security → Microphone.
+    </p>
+  {/if}
   <div
-    class="flex items-center gap-4 border-b border-red-200 bg-red-50 px-6 py-3 dark:border-red-900 dark:bg-red-950/40"
+    class="flex items-center gap-4 border-t border-red-200 bg-red-50 px-6 py-3 dark:border-red-900 dark:bg-red-950/40"
     role="status"
   >
     <span
@@ -43,19 +54,8 @@
     </button>
     <button class="btn-primary" onclick={() => whipscribe.stopAndTranscribe()}>Stop</button>
   </div>
-  {#if status.systemError}
-    <p class="border-b border-amber-200 bg-amber-50 px-6 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200" role="alert">
-      Recording your microphone only. {status.systemError}
-    </p>
-  {/if}
-  {#if recorder.silent}
-    <p class="border-b border-amber-200 bg-amber-50 px-6 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200" role="alert">
-      We can't hear your microphone. Check it isn't muted, and that WhipScribe Recorder is
-      allowed in System Settings → Privacy & Security → Microphone.
-    </p>
-  {/if}
 {:else if recorder.error}
-  <p class="flex items-center justify-between gap-4 border-b border-red-200 bg-red-50 px-6 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200" role="alert">
+  <p class="flex items-center justify-between gap-4 border-t border-red-200 bg-red-50 px-6 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200" role="alert">
     Couldn't record: {recorder.error}
     <button class="btn" onclick={() => (recorder.error = "")}>Dismiss</button>
   </p>
