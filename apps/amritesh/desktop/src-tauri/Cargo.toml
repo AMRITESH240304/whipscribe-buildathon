@@ -29,6 +29,8 @@ base64 = "0.23.1"
 url = "2.5.8"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "form", "query"] }
+cpal = "0.18.2"
+hound = "3.5.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
