@@ -1,19 +1,12 @@
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager, State};
-use tauri_plugin_opener::OpenerExt;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    sync::Mutex,
-};
+use tauri::{AppHandle, State};
+use tokio::sync::Mutex;
 use url::Url;
 
-use crate::{err, net_err, secret, Result, NOT_CONNECTED};
+use crate::{err, net_err, oauth::Loopback, secret, Result, NOT_CONNECTED};
 
 const CLIENT_ID: &str = env!("GOOGLE_CLIENT_ID");
 const CLIENT_SECRET: &str = env!("GOOGLE_CLIENT_SECRET");
@@ -23,7 +16,6 @@ const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 const EVENTS_URL: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const SCOPE: &str = "https://www.googleapis.com/auth/calendar.events.readonly";
 const KEYRING_USER: &str = "google-refresh-token";
-const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct GoogleState {
     http: reqwest::Client,
@@ -149,10 +141,6 @@ fn stored_refresh_token() -> Option<String> {
     keyring().ok()?.get_password().ok()
 }
 
-fn random_token() -> String {
-    URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
-}
-
 fn cache(slot: &mut Option<(String, Instant)>, token: &TokenResponse) -> String {
     let expires = Instant::now() + Duration::from_secs(token.expires_in.saturating_sub(60));
     *slot = Some((token.access_token.clone(), expires));
@@ -198,48 +186,6 @@ async fn access_token(state: &GoogleState) -> Result<String> {
     Ok(cache(&mut access, &token))
 }
 
-async fn wait_for_code(listener: &TcpListener, csrf: &str) -> Result<String> {
-    loop {
-        let (mut stream, _) = listener.accept().await.map_err(err)?;
-        let mut buf = [0u8; 4096];
-        let n = stream.read(&mut buf).await.map_err(err)?;
-        let request = String::from_utf8_lossy(&buf[..n]);
-        let Some(path) = request.split_whitespace().nth(1) else {
-            continue;
-        };
-        let url = Url::parse(&format!("http://127.0.0.1{path}")).map_err(err)?;
-        let param = |key: &str| {
-            url.query_pairs()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.into_owned())
-        };
-
-        let result = match (param("code"), param("error")) {
-            (Some(code), _) if param("state").as_deref() == Some(csrf) => Ok(code),
-            (_, Some(e)) if e == "access_denied" => Err("Sign-in was cancelled.".to_string()),
-            (_, Some(e)) => Err(format!("Google sign-in failed ({e}).")),
-            _ => continue,
-        };
-
-        let message = if result.is_ok() {
-            "Calendar connected. You can close this tab and go back to WhipScribe Recorder."
-        } else {
-            "Sign-in didn't finish. You can close this tab and try again from the app."
-        };
-        let body = format!(
-            "<!doctype html><meta charset=utf-8><title>WhipScribe Recorder</title>\
-             <body style=\"font:16px system-ui;padding:48px\">{message}</body>"
-        );
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        return result;
-    }
-}
-
 #[tauri::command]
 pub fn google_status() -> bool {
     stored_refresh_token().is_some()
@@ -247,37 +193,23 @@ pub fn google_status() -> bool {
 
 #[tauri::command]
 pub async fn google_connect(app: AppHandle, state: State<'_, GoogleState>) -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(err)?;
-    let redirect_uri = format!(
-        "http://127.0.0.1:{}",
-        listener.local_addr().map_err(err)?.port()
-    );
-    let verifier = random_token();
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let csrf = random_token();
-
+    let sign_in = Loopback::bind().await?;
     let auth_url = Url::parse_with_params(
         AUTH_URL,
         &[
             ("client_id", CLIENT_ID),
-            ("redirect_uri", &redirect_uri),
+            ("redirect_uri", &sign_in.redirect_uri),
             ("response_type", "code"),
             ("scope", SCOPE),
-            ("code_challenge", &challenge),
+            ("code_challenge", &sign_in.challenge),
             ("code_challenge_method", "S256"),
-            ("state", &csrf),
+            ("state", &sign_in.state),
             ("access_type", "offline"),
             ("prompt", "consent"),
         ],
     )
     .map_err(err)?;
-    app.opener()
-        .open_url(auth_url.as_str(), None::<&str>)
-        .map_err(err)?;
-
-    let code = tokio::time::timeout(SIGN_IN_TIMEOUT, wait_for_code(&listener, &csrf))
-        .await
-        .map_err(|_| "Sign-in timed out. Try again.".to_string())??;
+    let code = sign_in.authorize(&app, &auth_url).await?;
 
     let token: TokenResponse = state
         .http
@@ -286,9 +218,9 @@ pub async fn google_connect(app: AppHandle, state: State<'_, GoogleState>) -> Re
             ("client_id", CLIENT_ID),
             ("client_secret", CLIENT_SECRET),
             ("code", &code),
-            ("code_verifier", &verifier),
+            ("code_verifier", &sign_in.verifier),
             ("grant_type", "authorization_code"),
-            ("redirect_uri", &redirect_uri),
+            ("redirect_uri", &sign_in.redirect_uri),
         ])
         .send()
         .await
@@ -305,10 +237,6 @@ pub async fn google_connect(app: AppHandle, state: State<'_, GoogleState>) -> Re
         .ok_or("Google did not return a refresh token.")?;
     keyring()?.set_password(refresh).map_err(err)?;
     cache(&mut *state.access.lock().await, &token);
-
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_focus();
-    }
     Ok(())
 }
 

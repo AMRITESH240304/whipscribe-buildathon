@@ -1,7 +1,9 @@
 use tauri::{Manager, RunEvent};
 
 mod google;
+mod mcp;
 mod mixer;
+mod oauth;
 mod recorder;
 mod whipscribe;
 
@@ -34,6 +36,7 @@ pub fn run() {
         .manage(google::GoogleState::new())
         .manage(recorder::Recorder::default())
         .manage(whipscribe::WhipScribe::new())
+        .manage(mcp::Mcp::new())
         .setup(|app| {
             if let Err(e) = recorder::recover_interrupted(app.handle()) {
                 eprintln!("recovery failed: {e}");
@@ -50,11 +53,17 @@ pub fn run() {
             recorder::set_paused,
             recorder::recording_status,
             recorder::list_recordings,
+            recorder::rename_recording,
             whipscribe::whipscribe_status,
             whipscribe::whipscribe_connect,
             whipscribe::transcribe,
             whipscribe::job_status,
             whipscribe::transcript,
+            whipscribe::delete_recording,
+            whipscribe::search_transcripts,
+            mcp::whipscribe_signed_in,
+            mcp::whipscribe_sign_in,
+            mcp::library,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

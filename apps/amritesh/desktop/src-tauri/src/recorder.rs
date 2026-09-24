@@ -424,3 +424,15 @@ pub fn list_recordings(app: AppHandle) -> Result<Vec<Recording>> {
     recordings.sort_by(|a, b| b.started_at.cmp(&a.started_at));
     Ok(recordings)
 }
+
+#[tauri::command]
+pub fn rename_recording(app: AppHandle, id: String, title: String) -> Result<()> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Give the recording a name.".into());
+    }
+    let dir = recordings_dir(&app)?;
+    let mut meta = read_meta(&dir, &id).ok_or("This recording no longer exists.")?;
+    meta.title = title.to_string();
+    write_meta(&dir, &id, &meta)
+}

@@ -2,15 +2,19 @@
   import { onMount } from "svelte";
   import Calendar from "$lib/components/Calendar.svelte";
   import RecordBar from "$lib/components/RecordBar.svelte";
+  import RecordingView from "$lib/components/RecordingView.svelte";
   import Recordings from "$lib/components/Recordings.svelte";
-  import Transcript from "$lib/components/Transcript.svelte";
-  import { recorder, type Recording } from "$lib/recorder.svelte";
+  import { library } from "$lib/library.svelte";
+  import { recorder } from "$lib/recorder.svelte";
   import { whipscribe } from "$lib/whipscribe.svelte";
 
-  let open = $state<Recording | null>(null);
+  let openId = $state<string | null>(null);
+  let openAt = $state<number | undefined>();
+
+  const open = $derived(recorder.recordings.find((r) => r.id === openId));
 
   onMount(async () => {
-    await Promise.all([recorder.init(), whipscribe.init()]);
+    await Promise.all([recorder.init(), whipscribe.init(), library.init()]);
     if (whipscribe.connected) whipscribe.resume(recorder.recordings);
   });
 </script>
@@ -30,11 +34,13 @@
 
   <main class="flex-1 overflow-y-auto">
     {#if open}
-      <Transcript recording={open} onBack={() => (open = null)} />
+      {#key open.id}
+        <RecordingView recording={open} at={openAt} onBack={() => (openId = null)} />
+      {/key}
     {:else}
       <div class="mx-auto w-full max-w-2xl space-y-10 px-6 py-6">
         <Calendar />
-        <Recordings onOpen={(recording) => (open = recording)} />
+        <Recordings onOpen={(id, at) => ((openId = id), (openAt = at))} />
       </div>
     {/if}
   </main>
