@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>WhipScribe Recorder records your microphone during the meetings you choose to record.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>WhipScribe Recorder records the other people on your call during the meetings you choose to record.</string>
 </dict>
 </plist>

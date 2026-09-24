@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type Status = { title: string; elapsedSecs: number; paused: boolean; level: number };
+export type Status = {
+  title: string;
+  elapsedSecs: number;
+  paused: boolean;
+  micLevel: number;
+  systemLevel: number;
+  systemError: string | null;
+};
 
 export type Recording = {
   id: string;
@@ -70,7 +77,7 @@ class Recorder {
     clearInterval(this.#poll);
     this.#poll = setInterval(async () => {
       this.status = await invoke<Status | null>("recording_status");
-      if (this.status && this.status.level > 0.01) this.heardSound = true;
+      if (this.status && this.status.micLevel > 0.01) this.heardSound = true;
     }, 200);
   }
 }

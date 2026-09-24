@@ -12,13 +12,23 @@ use std::{
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    FromSample, SampleFormat, SizedSample, StreamConfig,
+    FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
+use crate::mixer::{Mixer, Source, OUTPUT_RATE};
+
 type Result<T> = std::result::Result<T, String>;
 type Wav = hound::WavWriter<BufWriter<File>>;
+type Chunks = mpsc::Sender<(Source, Vec<f32>)>;
+
+const WAV_SPEC: hound::WavSpec = hound::WavSpec {
+    channels: 1,
+    sample_rate: OUTPUT_RATE,
+    bits_per_sample: 16,
+    sample_format: hound::SampleFormat::Int,
+};
 
 // Recordings are written as `<id>.partial` and renamed to `<id>.wav` on stop.
 // A `.partial` left behind means the app died mid-recording.
@@ -33,7 +43,7 @@ struct Session {
     id: String,
     title: String,
     dir: PathBuf,
-    sample_rate: u32,
+    system_error: Option<String>,
     shared: Arc<Shared>,
     thread: JoinHandle<Result<()>>,
 }
@@ -43,7 +53,13 @@ struct Shared {
     stop: AtomicBool,
     paused: AtomicBool,
     frames: AtomicU64,
-    peak: AtomicU32,
+    peaks: [AtomicU32; 2],
+}
+
+impl Shared {
+    fn take_level(&self, source: Source) -> f32 {
+        self.peaks[source as usize].swap(0, Relaxed) as f32 / i16::MAX as f32
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,7 +77,9 @@ pub struct Status {
     title: String,
     elapsed_secs: f64,
     paused: bool,
-    level: f32,
+    mic_level: f32,
+    system_level: f32,
+    system_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -97,7 +115,8 @@ fn read_meta(dir: &Path, id: &str) -> Option<Meta> {
 fn build_stream<T>(
     device: &cpal::Device,
     config: StreamConfig,
-    tx: mpsc::Sender<Vec<i16>>,
+    source: Source,
+    tx: Chunks,
     shared: Arc<Shared>,
 ) -> Result<cpal::Stream>
 where
@@ -112,96 +131,135 @@ where
                 if shared.paused.load(Relaxed) {
                     return;
                 }
-                let mono = data
+                let mono: Vec<f32> = data
                     .chunks(channels)
                     .map(|frame| {
-                        let sum: f32 = frame.iter().map(|&s| s.to_sample::<f32>()).sum();
-                        ((sum / channels as f32).clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+                        frame.iter().map(|&s| s.to_sample::<f32>()).sum::<f32>() / channels as f32
                     })
                     .collect();
-                let _ = tx.send(mono);
+                let peak = mono.iter().fold(0f32, |m, s| m.max(s.abs())).min(1.0);
+                shared.peaks[source as usize].fetch_max((peak * i16::MAX as f32) as u32, Relaxed);
+                let _ = tx.send((source, mono));
             },
-            |e| eprintln!("microphone error: {e}"),
+            |e| eprintln!("audio input error: {e}"),
             None,
         )
         .map_err(err)
 }
 
-fn open_microphone(
-    path: &Path,
+fn open_stream(
+    device: &cpal::Device,
+    supported: SupportedStreamConfig,
+    source: Source,
+    tx: Chunks,
     shared: &Arc<Shared>,
-) -> Result<(cpal::Stream, Wav, mpsc::Receiver<Vec<i16>>, u32)> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("No microphone found.")?;
-    let supported = device.default_input_config().map_err(err)?;
-    let sample_rate = supported.sample_rate();
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let writer = hound::WavWriter::create(path, spec).map_err(err)?;
-
-    let (tx, rx) = mpsc::channel();
+) -> Result<(cpal::Stream, u32)> {
     let config = supported.config();
     let shared = shared.clone();
     let stream = match supported.sample_format() {
-        SampleFormat::F32 => build_stream::<f32>(&device, config, tx, shared),
-        SampleFormat::I16 => build_stream::<i16>(&device, config, tx, shared),
-        SampleFormat::I32 => build_stream::<i32>(&device, config, tx, shared),
-        SampleFormat::U16 => build_stream::<u16>(&device, config, tx, shared),
-        other => Err(format!("Unsupported microphone format: {other}")),
+        SampleFormat::F32 => build_stream::<f32>(device, config, source, tx, shared),
+        SampleFormat::I16 => build_stream::<i16>(device, config, source, tx, shared),
+        SampleFormat::I32 => build_stream::<i32>(device, config, source, tx, shared),
+        SampleFormat::U16 => build_stream::<u16>(device, config, source, tx, shared),
+        other => Err(format!("Unsupported audio format: {other}")),
     }?;
     stream.play().map_err(err)?;
-    Ok((stream, writer, rx, sample_rate))
+    Ok((stream, supported.sample_rate()))
 }
 
-fn write_chunk(writer: &mut Wav, shared: &Shared, chunk: &[i16]) -> Result<()> {
-    for &sample in chunk {
+fn open_microphone(
+    host: &cpal::Host,
+    tx: Chunks,
+    shared: &Arc<Shared>,
+) -> Result<(cpal::Stream, u32)> {
+    let device = host.default_input_device().ok_or("No microphone found.")?;
+    let config = device.default_input_config().map_err(err)?;
+    open_stream(&device, config, Source::Mic, tx, shared)
+}
+
+// An input stream on an output device is a Core Audio tap on macOS 14.2+
+// and WASAPI loopback on Windows.
+fn open_system_audio(
+    host: &cpal::Host,
+    tx: Chunks,
+    shared: &Arc<Shared>,
+) -> Result<(cpal::Stream, u32)> {
+    let device = host
+        .default_output_device()
+        .ok_or("No speakers or headphones found.")?;
+    // cpal only taps devices without inputs; otherwise it would record this device's mic.
+    if cfg!(target_os = "macos") && device.supports_input() {
+        return Err(
+            "Your output device has its own microphone (like a USB headset). \
+                    Switch sound output to speakers or Bluetooth headphones to record the call."
+                .into(),
+        );
+    }
+    let config = device.default_output_config().map_err(err)?;
+    open_stream(&device, config, Source::System, tx, shared)
+}
+
+fn write_samples(writer: &mut Wav, shared: &Shared, samples: &[i16]) -> Result<()> {
+    for &sample in samples {
         writer.write_sample(sample).map_err(err)?;
     }
-    shared.frames.fetch_add(chunk.len() as u64, Relaxed);
-    let peak = chunk.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-    shared.peak.fetch_max(peak as u32, Relaxed);
+    shared.frames.fetch_add(samples.len() as u64, Relaxed);
     Ok(())
 }
 
-// Owns the audio stream (not Send on every platform) and the file writer.
+// Owns the audio streams (not Send on every platform) and the file writer.
 // Flushing every second keeps the file on disk if the process is killed.
+// Sends back why system audio is unavailable, if it is; the mic alone is enough to record.
 fn record(
     path: PathBuf,
     shared: Arc<Shared>,
-    ready: mpsc::Sender<Result<u32>>,
+    ready: mpsc::Sender<Result<Option<String>>>,
 ) -> Result<()> {
-    let (stream, mut writer, rx) = match open_microphone(&path, &shared) {
-        Ok((stream, writer, rx, sample_rate)) => {
-            let _ = ready.send(Ok(sample_rate));
-            (stream, writer, rx)
-        }
+    let host = cpal::default_host();
+    let (tx, rx) = mpsc::channel();
+    let setup = || -> Result<_> {
+        let mic = open_microphone(&host, tx.clone(), &shared)?;
+        let system = open_system_audio(&host, tx, &shared);
+        let writer = hound::WavWriter::create(&path, WAV_SPEC).map_err(err)?;
+        Ok((mic, system, writer))
+    };
+    let ((mic, mic_rate), system, mut writer) = match setup() {
+        Ok(opened) => opened,
         Err(e) => {
-            let _ = fs::remove_file(&path);
             let _ = ready.send(Err(e.clone()));
             return Err(e);
         }
     };
+    let (system, system_rate) = match system {
+        Ok((stream, rate)) => {
+            let _ = ready.send(Ok(None));
+            (Some(stream), Some(rate))
+        }
+        Err(e) => {
+            let _ = ready.send(Ok(Some(e)));
+            (None, None)
+        }
+    };
 
+    let mut mixer = Mixer::new(mic_rate, system_rate);
     let mut last_flush = Instant::now();
     while !shared.stop.load(Relaxed) {
-        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
-            write_chunk(&mut writer, &shared, &chunk)?;
+        let received = rx.recv_timeout(Duration::from_millis(100)).into_iter();
+        for (source, chunk) in received.chain(rx.try_iter()) {
+            mixer.push(source, &chunk);
         }
+        write_samples(&mut writer, &shared, &mixer.drain(false))?;
         if last_flush.elapsed() >= Duration::from_secs(1) {
             writer.flush().map_err(err)?;
             last_flush = Instant::now();
         }
     }
 
-    drop(stream);
-    for chunk in rx.try_iter() {
-        write_chunk(&mut writer, &shared, &chunk)?;
+    drop((mic, system));
+    for (source, chunk) in rx.try_iter() {
+        mixer.push(source, &chunk);
     }
+    write_samples(&mut writer, &shared, &mixer.drain(true))?;
     writer.finalize().map_err(err)
 }
 
@@ -282,7 +340,7 @@ pub fn start_recording(app: AppHandle, state: State<'_, Recorder>, title: String
     let path = dir.join(format!("{id}.{PARTIAL}"));
     let thread_shared = shared.clone();
     let thread = std::thread::spawn(move || record(path, thread_shared, ready_tx));
-    let sample_rate = ready_rx
+    let system_error = ready_rx
         .recv()
         .map_err(|_| "The recorder stopped unexpectedly.".to_string())??;
 
@@ -299,7 +357,7 @@ pub fn start_recording(app: AppHandle, state: State<'_, Recorder>, title: String
         id,
         title,
         dir,
-        sample_rate,
+        system_error,
         shared,
         thread,
     });
@@ -324,9 +382,11 @@ pub fn recording_status(state: State<'_, Recorder>) -> Option<Status> {
     let slot = state.session.lock().unwrap();
     slot.as_ref().map(|s| Status {
         title: s.title.clone(),
-        elapsed_secs: s.shared.frames.load(Relaxed) as f64 / s.sample_rate as f64,
+        elapsed_secs: s.shared.frames.load(Relaxed) as f64 / OUTPUT_RATE as f64,
         paused: s.shared.paused.load(Relaxed),
-        level: s.shared.peak.swap(0, Relaxed) as f32 / i16::MAX as f32,
+        mic_level: s.shared.take_level(Source::Mic),
+        system_level: s.shared.take_level(Source::System),
+        system_error: s.system_error.clone(),
     })
 }
 
@@ -345,7 +405,9 @@ pub fn list_recordings(app: AppHandle) -> Result<Vec<Recording>> {
                 .map(|r| r.duration() as f64 / r.spec().sample_rate as f64)
                 .unwrap_or(0.0);
             Some(Recording {
-                title: meta.as_ref().map_or("Untitled recording".into(), |m| m.title.clone()),
+                title: meta
+                    .as_ref()
+                    .map_or("Untitled recording".into(), |m| m.title.clone()),
                 started_at: meta.as_ref().map_or(0, |m| m.started_at),
                 recovered: meta.is_some_and(|m| m.recovered),
                 duration_secs,

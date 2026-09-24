@@ -1,6 +1,7 @@
 use tauri::{Manager, RunEvent};
 
 mod google;
+mod mixer;
 mod recorder;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
